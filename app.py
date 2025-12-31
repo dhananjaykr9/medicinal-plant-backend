@@ -81,7 +81,10 @@ app.add_middleware(
 # =====================================================
 # 1️⃣ Load fine-tuned ResNet50
 # =====================================================
-resnet_model = load_model(MODEL_PATHS["resnet"])
+resnet_model = load_model(
+    MODEL_PATHS["resnet"],
+    compile=False
+)
 resnet_model.trainable = False
 
 # =====================================================
