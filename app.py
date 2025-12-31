@@ -22,6 +22,9 @@ from tensorflow.keras.layers import GlobalAveragePooling2D, GlobalMaxPool2D
 from preprocess import preprocess_image
 from plant_info import get_plant_info
 
+
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 # =====================================================
 # MODEL DOWNLOAD CONFIG
 # =====================================================
@@ -102,10 +105,12 @@ app.add_middleware(
 # =====================================================
 # Load ResNet50
 # =====================================================
-resnet_model = load_model(
+
+resnet_model = tf.keras.models.load_model(
     MODEL_PATHS["resnet"],
     compile=False
 )
+
 
 #resnet_model = load_model(MODEL_PATHS["resnet"])
 resnet_model.trainable = False
