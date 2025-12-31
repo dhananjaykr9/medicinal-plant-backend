@@ -12,6 +12,7 @@ import os
 import numpy as np
 import joblib
 import gdown
+import h5py
 
 import tensorflow as tf
 from tensorflow.keras.models import load_model, Model
@@ -24,7 +25,7 @@ from plant_info import get_plant_info
 # =====================================================
 # MODEL DOWNLOAD CONFIG
 # =====================================================
-BASE_MODEL_DIR = "models"
+BASE_MODEL_DIR = "/tmp/models"   # Render-safe
 os.makedirs(BASE_MODEL_DIR, exist_ok=True)
 
 MODEL_IDS = {
@@ -43,22 +44,42 @@ MODEL_PATHS = {
     "classes": f"{BASE_MODEL_DIR}/class_names.npy",
 }
 
-def download_model(file_id: str, output_path: str):
-    """
-    Download a file from Google Drive using gdown (safe & reliable).
-    """
-    if not os.path.exists(output_path):
+# =====================================================
+# SAFE DOWNLOAD + VALIDATION
+# =====================================================
+def is_valid_h5(path: str) -> bool:
+    try:
+        with h5py.File(path, "r"):
+            return True
+    except Exception:
+        return False
+
+
+def download_model(file_id: str, output_path: str, is_h5=False):
+    must_download = True
+
+    if os.path.exists(output_path):
+        if is_h5:
+            if is_valid_h5(output_path):
+                print(f"✔️ Valid model exists: {output_path}")
+                must_download = False
+            else:
+                print(f"❌ Invalid H5 detected, re-downloading: {output_path}")
+                os.remove(output_path)
+        else:
+            print(f"✔️ Exists: {output_path}")
+            must_download = False
+
+    if must_download:
         print(f"⬇️ Downloading {output_path} ...")
         url = f"https://drive.google.com/uc?id={file_id}"
         gdown.download(url, output_path, quiet=False)
-        print(f"✅ Downloaded: {output_path}")
-    else:
-        print(f"✔️ Exists: {output_path}")
+        print(f"✅ Downloaded {output_path}")
 
 # =====================================================
 # DOWNLOAD MODELS (BEFORE LOADING)
 # =====================================================
-download_model(MODEL_IDS["resnet"], MODEL_PATHS["resnet"])
+download_model(MODEL_IDS["resnet"], MODEL_PATHS["resnet"], is_h5=True)
 download_model(MODEL_IDS["svm"], MODEL_PATHS["svm"])
 download_model(MODEL_IDS["scaler"], MODEL_PATHS["scaler"])
 download_model(MODEL_IDS["indices"], MODEL_PATHS["indices"])
@@ -79,77 +100,51 @@ app.add_middleware(
 )
 
 # =====================================================
-# 1️⃣ Load fine-tuned ResNet50
+# Load ResNet50
 # =====================================================
-resnet_model = load_model(
-    MODEL_PATHS["resnet"],
-    compile=False
-)
+resnet_model = load_model(MODEL_PATHS["resnet"])
 resnet_model.trainable = False
 
 # =====================================================
-# 2️⃣ Build GAP-aligned feature extractor
+# Build feature extractor
 # =====================================================
 def build_feature_extractor(model):
     for layer in reversed(model.layers):
         if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPool2D)):
-            print(f"✅ Using pooling layer: {layer.name}")
             return Model(inputs=model.input, outputs=layer.output)
-
-    print("⚠️ No GAP found; using penultimate layer")
     return Model(inputs=model.input, outputs=model.layers[-2].output)
 
 feature_extractor = build_feature_extractor(resnet_model)
 
 # =====================================================
-# 3️⃣ Load QPSO + SVM artifacts
+# Load QPSO + SVM assets
 # =====================================================
 svm_model = joblib.load(MODEL_PATHS["svm"])
 scaler = joblib.load(MODEL_PATHS["scaler"])
 selected_indices = np.load(MODEL_PATHS["indices"])
-
-# =====================================================
-# 4️⃣ Load class names
-# =====================================================
 class_names = np.load(MODEL_PATHS["classes"], allow_pickle=True).tolist()
 
-print("📋 Loaded class names:")
-for i, name in enumerate(class_names):
-    print(f"  {i}: {name}")
-
-print("✅ All models and assets loaded successfully.")
+print("✅ All models loaded successfully.")
 
 # =====================================================
 # Prediction endpoint
 # =====================================================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """
-    Input : Leaf image
-    Output: Plant name, confidence, Grad-CAM, SHAP, description
-    """
-
-    image_bytes = await file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
+    image = Image.open(io.BytesIO(await file.read())).convert("RGB")
     img_array = preprocess_image(image)
 
-    deep_features = feature_extractor.predict(img_array)
-    deep_features = deep_features[:, selected_indices]
-    deep_features = scaler.transform(deep_features)
+    features = feature_extractor.predict(img_array)
+    features = features[:, selected_indices]
+    features = scaler.transform(features)
 
-    probabilities = svm_model.predict_proba(deep_features)[0]
-    pred_index = int(np.argmax(probabilities))
-
-    plant_name = class_names[pred_index]
-    confidence = float(probabilities[pred_index])
-
-    description = get_plant_info(plant_name)
+    probs = svm_model.predict_proba(features)[0]
+    idx = int(np.argmax(probs))
 
     return {
-        "plant_name": plant_name,
-        "confidence": round(confidence, 4),
-        "description": description,
+        "plant_name": class_names[idx],
+        "confidence": round(float(probs[idx]), 4),
+        "description": get_plant_info(class_names[idx]),
         "gradcam_image": "",
         "shap_image": ""
     }
