@@ -1,7 +1,7 @@
 # ============================================================
 # Medicinal Plant Prediction API
-# ResNet50 (Fine-Tuned) + QPSO + SVM
-# AUTO-DOWNLOAD MODELS AT STARTUP (Render-safe, Google Drive safe)
+# ResNet50 (Fine-Tuned .keras) + QPSO + SVM
+# Render-safe | Google Drive auto-download
 # ============================================================
 
 from fastapi import FastAPI, File, UploadFile
@@ -12,10 +12,9 @@ import os
 import numpy as np
 import joblib
 import gdown
-import h5py
 
 import tensorflow as tf
-from tensorflow.keras.models import load_model, Model
+from tensorflow.keras.models import Model
 from tensorflow.keras.layers import GlobalAveragePooling2D, GlobalMaxPool2D
 
 # --------- local utility modules ---------
@@ -23,75 +22,100 @@ from preprocess import preprocess_image
 from plant_info import get_plant_info
 
 
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
-
 # =====================================================
-# MODEL DOWNLOAD CONFIG
+# RENDER SAFE DIRECTORIES
 # =====================================================
-BASE_MODEL_DIR = "/tmp/models"   # Render-safe
+BASE_MODEL_DIR = "/tmp/models"
 os.makedirs(BASE_MODEL_DIR, exist_ok=True)
 
+
+# =====================================================
+# GOOGLE DRIVE FILE IDS
+# =====================================================
 MODEL_IDS = {
-    "resnet": "1CSGs9CpNK6_Re43wHxl5tyWv6Qbcmi4z",
+    "resnet": "1sGdFIHRBOD0J3URuygthxwncgA0u0d0C",  # .keras
     "svm": "1i7OPtM4hgHDJAMfn3qamPL76_rOiPMbP",
     "scaler": "1KYuS4_2PxgI52pDUvMeD1wFH1ORiDnyN",
     "indices": "1X_r6ypUKMKE2MUYWyb5A6NDa8c1FqHcM",
     "classes": "1Dc0Hits0RP8qH7A4B-j50EOjFHRErsE_",
 }
 
+
+# =====================================================
+# LOCAL MODEL PATHS
+# =====================================================
 MODEL_PATHS = {
-    "resnet": f"{BASE_MODEL_DIR}/resnet_finetuned_model.h5",
+    "resnet": f"{BASE_MODEL_DIR}/resnet_finetuned_model.keras",
     "svm": f"{BASE_MODEL_DIR}/qpso_svm_model_finetuned.pkl",
     "scaler": f"{BASE_MODEL_DIR}/qpso_scaler_finetuned.pkl",
     "indices": f"{BASE_MODEL_DIR}/selected_indices_finetuned.npy",
     "classes": f"{BASE_MODEL_DIR}/class_names.npy",
 }
 
-# =====================================================
-# SAFE DOWNLOAD + VALIDATION
-# =====================================================
-def is_valid_h5(path: str) -> bool:
-    try:
-        with h5py.File(path, "r"):
-            return True
-    except Exception:
-        return False
-
-
-def download_model(file_id: str, output_path: str, is_h5=False):
-    must_download = True
-
-    if os.path.exists(output_path):
-        if is_h5:
-            if is_valid_h5(output_path):
-                print(f"✔️ Valid model exists: {output_path}")
-                must_download = False
-            else:
-                print(f"❌ Invalid H5 detected, re-downloading: {output_path}")
-                os.remove(output_path)
-        else:
-            print(f"✔️ Exists: {output_path}")
-            must_download = False
-
-    if must_download:
-        print(f"⬇️ Downloading {output_path} ...")
-        url = f"https://drive.google.com/uc?id={file_id}"
-        gdown.download(url, output_path, quiet=False)
-        print(f"✅ Downloaded {output_path}")
 
 # =====================================================
-# DOWNLOAD MODELS (BEFORE LOADING)
+# SAFE DOWNLOAD FUNCTION
 # =====================================================
-download_model(MODEL_IDS["resnet"], MODEL_PATHS["resnet"], is_h5=True)
-download_model(MODEL_IDS["svm"], MODEL_PATHS["svm"])
-download_model(MODEL_IDS["scaler"], MODEL_PATHS["scaler"])
-download_model(MODEL_IDS["indices"], MODEL_PATHS["indices"])
-download_model(MODEL_IDS["classes"], MODEL_PATHS["classes"])
+def download_if_missing(file_id: str, out_path: str):
+    if os.path.exists(out_path):
+        print(f"✔️ Exists: {out_path}")
+        return
 
-print("🔄 Loading models and assets...")
+    print(f"⬇️ Downloading {out_path}")
+    url = f"https://drive.google.com/uc?id={file_id}"
+    gdown.download(url, out_path, quiet=False)
+    print(f"✅ Downloaded: {out_path}")
+
 
 # =====================================================
-# FastAPI app
+# DOWNLOAD ALL FILES BEFORE LOADING
+# =====================================================
+download_if_missing(MODEL_IDS["resnet"], MODEL_PATHS["resnet"])
+download_if_missing(MODEL_IDS["svm"], MODEL_PATHS["svm"])
+download_if_missing(MODEL_IDS["scaler"], MODEL_PATHS["scaler"])
+download_if_missing(MODEL_IDS["indices"], MODEL_PATHS["indices"])
+download_if_missing(MODEL_IDS["classes"], MODEL_PATHS["classes"])
+
+print("🔄 Loading models...")
+
+
+# =====================================================
+# LOAD RESNET (.keras) — THIS IS THE FIX
+# =====================================================
+resnet_model = tf.keras.models.load_model(
+    MODEL_PATHS["resnet"],
+    compile=False
+)
+resnet_model.trainable = False
+
+
+# =====================================================
+# BUILD FEATURE EXTRACTOR
+# =====================================================
+def build_feature_extractor(model):
+    for layer in reversed(model.layers):
+        if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPool2D)):
+            return Model(inputs=model.input, outputs=layer.output)
+
+    return Model(inputs=model.input, outputs=model.layers[-2].output)
+
+
+feature_extractor = build_feature_extractor(resnet_model)
+
+
+# =====================================================
+# LOAD QPSO + SVM ASSETS
+# =====================================================
+svm_model = joblib.load(MODEL_PATHS["svm"])
+scaler = joblib.load(MODEL_PATHS["scaler"])
+selected_indices = np.load(MODEL_PATHS["indices"])
+class_names = np.load(MODEL_PATHS["classes"], allow_pickle=True).tolist()
+
+print("✅ All models loaded successfully.")
+
+
+# =====================================================
+# FASTAPI APP
 # =====================================================
 app = FastAPI(title="Medicinal Plant Identification API")
 
@@ -102,49 +126,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================================================
-# Load ResNet50
-# =====================================================
-
-resnet_model = tf.keras.models.load_model(
-    MODEL_PATHS["resnet"],
-    compile=False
-)
-
-
-#resnet_model = load_model(MODEL_PATHS["resnet"])
-resnet_model.trainable = False
 
 # =====================================================
-# Build feature extractor
-# =====================================================
-def build_feature_extractor(model):
-    for layer in reversed(model.layers):
-        if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPool2D)):
-            return Model(inputs=model.input, outputs=layer.output)
-    return Model(inputs=model.input, outputs=model.layers[-2].output)
-
-feature_extractor = build_feature_extractor(resnet_model)
-
-# =====================================================
-# Load QPSO + SVM assets
-# =====================================================
-svm_model = joblib.load(MODEL_PATHS["svm"])
-scaler = joblib.load(MODEL_PATHS["scaler"])
-selected_indices = np.load(MODEL_PATHS["indices"])
-class_names = np.load(MODEL_PATHS["classes"], allow_pickle=True).tolist()
-
-print("✅ All models loaded successfully.")
-
-# =====================================================
-# Prediction endpoint
+# PREDICTION ENDPOINT
 # =====================================================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     image = Image.open(io.BytesIO(await file.read())).convert("RGB")
     img_array = preprocess_image(image)
 
-    features = feature_extractor.predict(img_array)
+    features = feature_extractor.predict(img_array, verbose=0)
     features = features[:, selected_indices]
     features = scaler.transform(features)
 
@@ -159,8 +150,9 @@ async def predict(file: UploadFile = File(...)):
         "shap_image": ""
     }
 
+
 # =====================================================
-# Health check
+# HEALTH CHECK
 # =====================================================
 @app.get("/")
 def health():
