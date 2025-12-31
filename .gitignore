@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+env/
+
+# ML / AI
+models/
+*.h5
+*.pt
+*.pth
+*.onnx
+*.pkl
+
+# Data
+dataset/
+data/
+*.zip
+*.tar
+*.tar.gz
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Logs
+logs/
