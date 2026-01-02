@@ -12,27 +12,15 @@ import os
 import numpy as np
 import joblib
 import gdown
-import tensorflow as tf
 
+import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import GlobalAveragePooling2D, GlobalMaxPool2D
 
+# --------- local utility modules ---------
 from preprocess import preprocess_image
 from plant_info import get_plant_info
 
-tf.keras.backend.set_learning_phase(0)
-
-# =====================================================
-# FASTAPI APP (CREATE FIRST)
-# =====================================================
-app = FastAPI(title="Medicinal Plant Identification API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # =====================================================
 # RENDER SAFE DIRECTORIES
@@ -40,16 +28,18 @@ app.add_middleware(
 BASE_MODEL_DIR = "/tmp/models"
 os.makedirs(BASE_MODEL_DIR, exist_ok=True)
 
+
 # =====================================================
 # GOOGLE DRIVE FILE IDS
 # =====================================================
 MODEL_IDS = {
-    "resnet": "1O1Wa1Pvhsp2khZAsRZ2r9pirOqUcez2c",
+    "resnet": "1O1Wa1Pvhsp2khZAsRZ2r9pirOqUcez2c",  # TF-Keras compatible
     "svm": "1i7OPtM4hgHDJAMfn3qamPL76_rOiPMbP",
     "scaler": "1KYuS4_2PxgI52pDUvMeD1wFH1ORiDnyN",
     "indices": "1X_r6ypUKMKE2MUYWyb5A6NDa8c1FqHcM",
     "classes": "1Dc0Hits0RP8qH7A4B-j50EOjFHRErsE_",
 }
+
 
 # =====================================================
 # LOCAL MODEL PATHS
@@ -62,6 +52,7 @@ MODEL_PATHS = {
     "classes": f"{BASE_MODEL_DIR}/class_names.npy",
 }
 
+
 # =====================================================
 # SAFE DOWNLOAD FUNCTION
 # =====================================================
@@ -69,19 +60,27 @@ def download_if_missing(file_id: str, out_path: str):
     if os.path.exists(out_path):
         print(f"✔️ Exists: {out_path}")
         return
+
     print(f"⬇️ Downloading {out_path}")
-    gdown.download(f"https://drive.google.com/uc?id={file_id}", out_path, quiet=False)
+    url = f"https://drive.google.com/uc?id={file_id}"
+    gdown.download(url, out_path, quiet=False, fuzzy=True)
+    print(f"✅ Downloaded: {out_path}")
+
 
 # =====================================================
-# DOWNLOAD FILES
+# DOWNLOAD ALL FILES BEFORE LOADING
 # =====================================================
-for k in MODEL_IDS:
-    download_if_missing(MODEL_IDS[k], MODEL_PATHS[k])
+download_if_missing(MODEL_IDS["resnet"], MODEL_PATHS["resnet"])
+download_if_missing(MODEL_IDS["svm"], MODEL_PATHS["svm"])
+download_if_missing(MODEL_IDS["scaler"], MODEL_PATHS["scaler"])
+download_if_missing(MODEL_IDS["indices"], MODEL_PATHS["indices"])
+download_if_missing(MODEL_IDS["classes"], MODEL_PATHS["classes"])
 
 print("🔄 Loading models...")
 
+
 # =====================================================
-# LOAD RESNET (.keras)
+# LOAD RESNET (.keras) — FIXED & COMPATIBLE
 # =====================================================
 resnet_model = tf.keras.models.load_model(
     MODEL_PATHS["resnet"],
@@ -89,19 +88,23 @@ resnet_model = tf.keras.models.load_model(
 )
 resnet_model.trainable = False
 
+
 # =====================================================
-# FEATURE EXTRACTOR
+# BUILD FEATURE EXTRACTOR
 # =====================================================
 def build_feature_extractor(model):
     for layer in reversed(model.layers):
         if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPool2D)):
-            return Model(model.input, layer.output)
-    return Model(model.input, model.layers[-2].output)
+            return Model(inputs=model.input, outputs=layer.output)
+
+    return Model(inputs=model.input, outputs=model.layers[-2].output)
+
 
 feature_extractor = build_feature_extractor(resnet_model)
 
+
 # =====================================================
-# LOAD SVM PIPELINE
+# LOAD QPSO + SVM ASSETS
 # =====================================================
 svm_model = joblib.load(MODEL_PATHS["svm"])
 scaler = joblib.load(MODEL_PATHS["scaler"])
@@ -109,6 +112,20 @@ selected_indices = np.load(MODEL_PATHS["indices"])
 class_names = np.load(MODEL_PATHS["classes"], allow_pickle=True).tolist()
 
 print("✅ All models loaded successfully.")
+
+
+# =====================================================
+# FASTAPI APP
+# =====================================================
+app = FastAPI(title="Medicinal Plant Identification API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # =====================================================
 # PREDICTION ENDPOINT
@@ -119,7 +136,8 @@ async def predict(file: UploadFile = File(...)):
     img_array = preprocess_image(image)
 
     features = feature_extractor.predict(img_array, verbose=0)
-    features = scaler.transform(features[:, selected_indices])
+    features = features[:, selected_indices]
+    features = scaler.transform(features)
 
     probs = svm_model.predict_proba(features)[0]
     idx = int(np.argmax(probs))
@@ -131,6 +149,7 @@ async def predict(file: UploadFile = File(...)):
         "gradcam_image": "",
         "shap_image": ""
     }
+
 
 # =====================================================
 # HEALTH CHECK
