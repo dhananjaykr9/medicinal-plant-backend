@@ -33,7 +33,7 @@ os.makedirs(BASE_MODEL_DIR, exist_ok=True)
 # GOOGLE DRIVE FILE IDS
 # =====================================================
 MODEL_IDS = {
-    "resnet": "19QwpDmJ9cQvHMyzgcYFtrGUZM_JN6aJk",  # .keras
+    "resnet": "1O1Wa1Pvhsp2khZAsRZ2r9pirOqUcez2c",  # .keras
     "svm": "1i7OPtM4hgHDJAMfn3qamPL76_rOiPMbP",
     "scaler": "1KYuS4_2PxgI52pDUvMeD1wFH1ORiDnyN",
     "indices": "1X_r6ypUKMKE2MUYWyb5A6NDa8c1FqHcM",
@@ -45,7 +45,7 @@ MODEL_IDS = {
 # LOCAL MODEL PATHS
 # =====================================================
 MODEL_PATHS = {
-    "resnet": f"{BASE_MODEL_DIR}/resnet_finetuned_model_tf.keras",
+    "resnet": f"{BASE_MODEL_DIR}/resnet_finetuned_tf213.keras"",
     "svm": f"{BASE_MODEL_DIR}/qpso_svm_model_finetuned.pkl",
     "scaler": f"{BASE_MODEL_DIR}/qpso_scaler_finetuned.pkl",
     "indices": f"{BASE_MODEL_DIR}/selected_indices_finetuned.npy",
