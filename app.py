@@ -1,7 +1,7 @@
 # ============================================================
 # Medicinal Plant Prediction API
 # ResNet50 (Fine-Tuned .keras) + QPSO + SVM
-# Render-safe | Google Drive auto-download
+# Render-safe (models downloaded at build time)
 # ============================================================
 
 from fastapi import FastAPI, File, UploadFile
@@ -11,7 +11,6 @@ import io
 import os
 import numpy as np
 import joblib
-import gdown
 
 import tensorflow as tf
 from tensorflow.keras.models import Model
@@ -23,64 +22,32 @@ from plant_info import get_plant_info
 
 
 # =====================================================
-# RENDER SAFE DIRECTORIES
+# MODEL DIRECTORY (POPULATED BY render-build.sh)
 # =====================================================
-BASE_MODEL_DIR = "/tmp/models"
-os.makedirs(BASE_MODEL_DIR, exist_ok=True)
+BASE_MODEL_DIR = "models"
 
-
-# =====================================================
-# GOOGLE DRIVE FILE IDS
-# =====================================================
-MODEL_IDS = {
-    "resnet": "1O1Wa1Pvhsp2khZAsRZ2r9pirOqUcez2c",  # TF-Keras compatible
-    "svm": "1i7OPtM4hgHDJAMfn3qamPL76_rOiPMbP",
-    "scaler": "1KYuS4_2PxgI52pDUvMeD1wFH1ORiDnyN",
-    "indices": "1X_r6ypUKMKE2MUYWyb5A6NDa8c1FqHcM",
-    "classes": "1Dc0Hits0RP8qH7A4B-j50EOjFHRErsE_",
-}
-
-
-# =====================================================
-# LOCAL MODEL PATHS
-# =====================================================
 MODEL_PATHS = {
-    "resnet": f"{BASE_MODEL_DIR}/resnet_finetuned_tf213.keras",
-    "svm": f"{BASE_MODEL_DIR}/qpso_svm_model_finetuned.pkl",
-    "scaler": f"{BASE_MODEL_DIR}/qpso_scaler_finetuned.pkl",
-    "indices": f"{BASE_MODEL_DIR}/selected_indices_finetuned.npy",
-    "classes": f"{BASE_MODEL_DIR}/class_names.npy",
+    "resnet": os.path.join(BASE_MODEL_DIR, "resnet_finetuned_tf213.keras"),
+    "svm": os.path.join(BASE_MODEL_DIR, "qpso_svm_model_finetuned.pkl"),
+    "scaler": os.path.join(BASE_MODEL_DIR, "qpso_scaler_finetuned.pkl"),
+    "indices": os.path.join(BASE_MODEL_DIR, "selected_indices_finetuned.npy"),
+    "classes": os.path.join(BASE_MODEL_DIR, "class_names.npy"),
 }
 
 
 # =====================================================
-# SAFE DOWNLOAD FUNCTION
+# SAFETY CHECK (FAIL FAST IF MODEL MISSING)
 # =====================================================
-def download_if_missing(file_id: str, out_path: str):
-    if os.path.exists(out_path):
-        print(f"✔️ Exists: {out_path}")
-        return
+for name, path in MODEL_PATHS.items():
+    if not os.path.exists(path):
+        raise RuntimeError(f"❌ Required model file missing: {path}")
 
-    print(f"⬇️ Downloading {out_path}")
-    url = f"https://drive.google.com/uc?id={file_id}"
-    gdown.download(url, out_path, quiet=False, fuzzy=True)
-    print(f"✅ Downloaded: {out_path}")
-
-
-# =====================================================
-# DOWNLOAD ALL FILES BEFORE LOADING
-# =====================================================
-download_if_missing(MODEL_IDS["resnet"], MODEL_PATHS["resnet"])
-download_if_missing(MODEL_IDS["svm"], MODEL_PATHS["svm"])
-download_if_missing(MODEL_IDS["scaler"], MODEL_PATHS["scaler"])
-download_if_missing(MODEL_IDS["indices"], MODEL_PATHS["indices"])
-download_if_missing(MODEL_IDS["classes"], MODEL_PATHS["classes"])
 
 print("🔄 Loading models...")
 
 
 # =====================================================
-# LOAD RESNET (.keras) — FIXED & COMPATIBLE
+# LOAD RESNET (.keras, TF 2.13 compatible)
 # =====================================================
 resnet_model = tf.keras.models.load_model(
     MODEL_PATHS["resnet"],
