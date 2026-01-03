@@ -1,6 +1,7 @@
 # ============================================================
 # Medicinal Plant Prediction API
-# Railway-safe version (lazy TensorFlow loading)
+# Railway-safe deployment
+# ResNet50 (.keras) + QPSO + SVM
 # ============================================================
 
 from fastapi import FastAPI, File, UploadFile
@@ -10,28 +11,18 @@ import io
 import os
 import numpy as np
 import joblib
+import gdown
 import tensorflow as tf
+
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import GlobalAveragePooling2D, GlobalMaxPool2D
 
+# --------- local utility modules ---------
 from preprocess import preprocess_image
 from plant_info import get_plant_info
 
 # =====================================================
-# MODEL PATHS (already present in repo)
-# =====================================================
-BASE_MODEL_DIR = "models"
-
-MODEL_PATHS = {
-    "resnet": os.path.join(BASE_MODEL_DIR, "resnet_finetuned_tf213.keras"),
-    "svm": os.path.join(BASE_MODEL_DIR, "qpso_svm_model_finetuned.pkl"),
-    "scaler": os.path.join(BASE_MODEL_DIR, "qpso_scaler_finetuned.pkl"),
-    "indices": os.path.join(BASE_MODEL_DIR, "selected_indices_finetuned.npy"),
-    "classes": os.path.join(BASE_MODEL_DIR, "class_names.npy"),
-}
-
-# =====================================================
-# GLOBAL OBJECTS (INITIALIZED AT STARTUP)
+# GLOBAL OBJECTS (initialized on startup)
 # =====================================================
 resnet_model = None
 feature_extractor = None
@@ -39,6 +30,59 @@ svm_model = None
 scaler = None
 selected_indices = None
 class_names = None
+
+# =====================================================
+# RAILWAY SAFE DIRECTORIES
+# =====================================================
+BASE_MODEL_DIR = "models"
+os.makedirs(BASE_MODEL_DIR, exist_ok=True)
+
+# =====================================================
+# GOOGLE DRIVE FILE IDS
+# =====================================================
+MODEL_IDS = {
+    "resnet": "1O1Wa1Pvhsp2khZAsRZ2r9pirOqUcez2c",
+    "svm": "1i7OPtM4hgHDJAMfn3qamPL76_rOiPMbP",
+    "scaler": "1KYuS4_2PxgI52pDUvMeD1wFH1ORiDnyN",
+    "indices": "1X_r6ypUKMKE2MUYWyb5A6NDa8c1FqHcM",
+    "classes": "1Dc0Hits0RP8qH7A4B-j50EOjFHRErsE_",
+}
+
+# =====================================================
+# LOCAL PATHS
+# =====================================================
+MODEL_PATHS = {
+    "resnet": f"{BASE_MODEL_DIR}/resnet_finetuned_tf213.keras",
+    "svm": f"{BASE_MODEL_DIR}/qpso_svm_model_finetuned.pkl",
+    "scaler": f"{BASE_MODEL_DIR}/qpso_scaler_finetuned.pkl",
+    "indices": f"{BASE_MODEL_DIR}/selected_indices_finetuned.npy",
+    "classes": f"{BASE_MODEL_DIR}/class_names.npy",
+}
+
+# =====================================================
+# SAFE DOWNLOAD
+# =====================================================
+def download_if_missing(file_id: str, out_path: str):
+    if os.path.exists(out_path):
+        print(f"✔️ Exists: {out_path}")
+        return
+
+    print(f"⬇️ Downloading: {out_path}")
+    url = f"https://drive.google.com/uc?id={file_id}"
+    gdown.download(url, out_path, quiet=False, fuzzy=True)
+
+    if not os.path.exists(out_path):
+        raise RuntimeError(f"❌ Failed to download {out_path}")
+
+# =====================================================
+# FEATURE EXTRACTOR
+# =====================================================
+def build_feature_extractor(model):
+    for layer in reversed(model.layers):
+        if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPool2D)):
+            return Model(inputs=model.input, outputs=layer.output)
+
+    return Model(inputs=model.input, outputs=model.layers[-2].output)
 
 # =====================================================
 # FASTAPI APP
@@ -53,50 +97,34 @@ app.add_middleware(
 )
 
 # =====================================================
-# LOAD MODELS ON STARTUP (CRITICAL FIX)
+# STARTUP EVENT (CRITICAL FIX)
 # =====================================================
 @app.on_event("startup")
 def load_models():
     global resnet_model, feature_extractor
     global svm_model, scaler, selected_indices, class_names
 
-    print("🔄 Loading models on startup...")
+    print("🔄 Downloading models...")
 
-    # ---- Check files exist
-    for p in MODEL_PATHS.values():
-        if not os.path.exists(p):
-            raise RuntimeError(f"❌ Missing model file: {p}")
+    for key in MODEL_IDS:
+        download_if_missing(MODEL_IDS[key], MODEL_PATHS[key])
 
-    # ---- Load ResNet (.keras)
+    print("🔄 Loading ResNet model...")
     resnet_model = tf.keras.models.load_model(
         MODEL_PATHS["resnet"],
         compile=False
     )
     resnet_model.trainable = False
 
-    # ---- Build feature extractor
-    for layer in reversed(resnet_model.layers):
-        if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPool2D)):
-            feature_extractor = Model(
-                inputs=resnet_model.input,
-                outputs=layer.output
-            )
-            break
+    feature_extractor = build_feature_extractor(resnet_model)
 
-    # ---- Load QPSO + SVM assets
+    print("🔄 Loading SVM pipeline...")
     svm_model = joblib.load(MODEL_PATHS["svm"])
     scaler = joblib.load(MODEL_PATHS["scaler"])
     selected_indices = np.load(MODEL_PATHS["indices"])
     class_names = np.load(MODEL_PATHS["classes"], allow_pickle=True).tolist()
 
     print("✅ All models loaded successfully")
-
-# =====================================================
-# HEALTH CHECK (RESPONDS IMMEDIATELY)
-# =====================================================
-@app.get("/")
-def health():
-    return {"status": "API running successfully"}
 
 # =====================================================
 # PREDICTION ENDPOINT
@@ -116,5 +144,14 @@ async def predict(file: UploadFile = File(...)):
     return {
         "plant_name": class_names[idx],
         "confidence": round(float(probs[idx]), 4),
-        "description": get_plant_info(class_names[idx])
+        "description": get_plant_info(class_names[idx]),
+        "gradcam_image": "",
+        "shap_image": ""
     }
+
+# =====================================================
+# HEALTH CHECK
+# =====================================================
+@app.get("/")
+def health():
+    return {"status": "API running successfully"}
